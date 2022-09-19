@@ -190,6 +190,9 @@ def output_to_target(output):
 
 @threaded
 def plot_images(images, targets, paths=None, fname='images.jpg', names=None, max_size=1920, max_subplots=16):
+    if isinstance(targets, list):
+        targets[1][:, 0] += 8
+        targets = torch.cat(targets)
     # Plot image grid with labels
     if isinstance(images, torch.Tensor):
         images = images.cpu().float().numpy()
@@ -343,7 +346,7 @@ def plot_val_study(file='', dir='', x=None):  # from utils.plots import *; plot_
 
 
 @TryExcept()  # known issue https://github.com/ultralytics/yolov5/issues/5395
-def plot_labels(labels, names=(), save_dir=Path('')):
+def plot_labels(labels, names=(), save_dir=Path(''), head=None):
     # plot dataset labels
     LOGGER.info(f"Plotting labels to {save_dir / 'labels.jpg'}... ")
     c, b = labels[:, 0], labels[:, 1:].transpose()  # classes, boxes
@@ -352,7 +355,10 @@ def plot_labels(labels, names=(), save_dir=Path('')):
 
     # seaborn correlogram
     sn.pairplot(x, corner=True, diag_kind='auto', kind='hist', diag_kws=dict(bins=50), plot_kws=dict(pmax=0.9))
-    plt.savefig(save_dir / 'labels_correlogram.jpg', dpi=200)
+    if head is not None:
+        plt.savefig(save_dir / f'labels_correlogram_{head}.jpg', dpi=200)
+    else:
+        plt.savefig(save_dir / f'labels_correlogram.jpg', dpi=200)
     plt.close()
 
     # matplotlib labels
@@ -382,8 +388,10 @@ def plot_labels(labels, names=(), save_dir=Path('')):
     for a in [0, 1, 2, 3]:
         for s in ['top', 'right', 'left', 'bottom']:
             ax[a].spines[s].set_visible(False)
-
-    plt.savefig(save_dir / 'labels.jpg', dpi=200)
+    if head is not None:
+        plt.savefig(save_dir / f'labels_{head}.jpg', dpi=200)
+    else:
+        plt.savefig(save_dir / 'labels.jpg', dpi=200)
     matplotlib.use('Agg')
     plt.close()
 

@@ -114,7 +114,8 @@ def create_dataloader(path,
                       image_weights=False,
                       quad=False,
                       prefix='',
-                      shuffle=False):
+                      shuffle=False,
+                      is_train=False):
     if rect and shuffle:
         LOGGER.warning('WARNING: --rect is incompatible with DataLoader shuffle, setting shuffle=False')
         shuffle = False
@@ -137,7 +138,10 @@ def create_dataloader(path,
     nd = torch.cuda.device_count()  # number of CUDA devices
     nw = min([os.cpu_count() // max(nd, 1), batch_size if batch_size > 1 else 0, workers])  # number of workers
     sampler = None if rank == -1 else distributed.DistributedSampler(dataset, shuffle=shuffle)
-    loader = DataLoader if image_weights else InfiniteDataLoader  # only DataLoader allows for attribute updates
+    if is_train:
+        loader = TrueInfiniteDataLoader
+    else:
+        loader = DataLoader if image_weights else InfiniteDataLoader  # only DataLoader allows for attribute updates
     generator = torch.Generator()
     generator.manual_seed(0)
     return loader(dataset,
@@ -149,6 +153,31 @@ def create_dataloader(path,
                   collate_fn=LoadImagesAndLabels.collate_fn4 if quad else LoadImagesAndLabels.collate_fn,
                   worker_init_fn=seed_worker,
                   generator=generator), dataset
+
+
+class MultipleInfiniteDataloaderWrapper():
+    """ Dataloader that reuses workers
+
+    Uses same syntax as vanilla DataLoader
+    """
+
+    def __init__(self, dataloaders):
+        self.dataloaders = dataloaders
+
+    def __len__(self):
+        return max([len(dataloader) for dataloader in self.dataloaders])
+
+    def __iter__(self):
+        for _ in range(len(self)):
+            imgs, targets, paths, s = [], [], [], []
+            for loader in self.dataloaders:
+                img, target, path, ss = next(loader.iterator)
+                imgs.append(img)
+                targets.append(target)
+                paths.extend(paths)
+                s.append(ss)
+            imgs = torch.cat(imgs)
+            yield imgs, targets, paths, s
 
 
 class InfiniteDataLoader(dataloader.DataLoader):
@@ -167,6 +196,25 @@ class InfiniteDataLoader(dataloader.DataLoader):
 
     def __iter__(self):
         for _ in range(len(self)):
+            yield next(self.iterator)
+
+
+class TrueInfiniteDataLoader(InfiniteDataLoader):
+    """ Dataloader that reuses workers
+
+    Uses same syntax as vanilla DataLoader
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        object.__setattr__(self, 'batch_sampler', _RepeatSampler(self.batch_sampler))
+        self.iterator = super().__iter__()
+
+    def __len__(self):
+        return len(self.batch_sampler.sampler)
+
+    def __iter__(self):
+        while True:
             yield next(self.iterator)
 
 

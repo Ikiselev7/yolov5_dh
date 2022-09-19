@@ -64,6 +64,43 @@ def check_anchors(dataset, model, thr=4.0, imgsz=640):
         LOGGER.info(s)
 
 
+@TryExcept(f'{PREFIX}ERROR: ')
+def check_anchors_head(dataset, m, thr=4.0, imgsz=640):
+    # Check anchor fit to data, recompute if necessary
+    shapes = imgsz * dataset.shapes / dataset.shapes.max(1, keepdims=True)
+    scale = np.random.uniform(0.9, 1.1, size=(shapes.shape[0], 1))  # augment scale
+    wh = torch.tensor(np.concatenate([l[:, 3:5] * s for s, l in zip(shapes * scale, dataset.labels)])).float()  # wh
+
+    def metric(k):  # compute metric
+        r = wh[:, None] / k[None]
+        x = torch.min(r, 1 / r).min(2)[0]  # ratio metric
+        best = x.max(1)[0]  # best_x
+        aat = (x > 1 / thr).float().sum(1).mean()  # anchors above threshold
+        bpr = (best > 1 / thr).float().mean()  # best possible recall
+        return bpr, aat
+
+    stride = m.stride.to(m.anchors.device).view(-1, 1, 1)  # model strides
+    anchors = m.anchors.clone() * stride  # current anchors
+    bpr, aat = metric(anchors.cpu().view(-1, 2))
+    s = f'\n{PREFIX}{aat:.2f} anchors/target, {bpr:.3f} Best Possible Recall (BPR). '
+    if bpr > 0.98:  # threshold to recompute
+        LOGGER.info(f'{s}Current anchors are a good fit to dataset ✅')
+    else:
+        LOGGER.info(f'{s}Anchors are a poor fit to dataset ⚠️, attempting to improve...')
+        na = m.anchors.numel() // 2  # number of anchors
+        anchors = kmean_anchors(dataset, n=na, img_size=imgsz, thr=thr, gen=1000, verbose=False)
+        new_bpr = metric(anchors)[0]
+        if new_bpr > bpr:  # replace anchors
+            anchors = torch.tensor(anchors, device=m.anchors.device).type_as(m.anchors)
+            m.anchors[:] = anchors.clone().view_as(m.anchors)
+            check_anchor_order(m)  # must be in pixel-space (not grid-space)
+            m.anchors /= stride
+            s = f'{PREFIX}Done ✅ (optional: update model *.yaml to use these anchors in the future)'
+        else:
+            s = f'{PREFIX}Done ⚠️ (original anchors better than new anchors, proceeding with original anchors)'
+        LOGGER.info(s)
+
+
 def kmean_anchors(dataset='./data/coco128.yaml', n=9, img_size=640, thr=4.0, gen=1000, verbose=True):
     """ Creates kmeans-evolved anchors from training dataset
 
