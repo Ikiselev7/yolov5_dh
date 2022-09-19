@@ -109,7 +109,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
     with torch_distributed_zero_first(LOCAL_RANK):
         data_dicts=[]
         for dat in data:
-            data_dict = data_dict or check_dataset(dat)  # check if None
+            data_dict = check_dataset(dat)  # check if None
             data_dicts.append(data_dict)
     train_paths, val_paths = [data_dict['train'] for data_dict in data_dicts], \
                              [data_dict['val'] for data_dict in data_dicts]
@@ -330,12 +330,12 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
 
                 # TODO: make multiple
                 first = preds[0]
-                f_preds = [pred[:8] for pred in first]
+                f_preds = [pred[:int(len(first)/2)] for pred in first]
                 f_loss, f_loss_items = compute_loss[0](f_preds, targets[0].to(device))  # loss scaled by batch_size
                 second = preds[1]
-                s_preds = [pred[8:] for pred in second]
+                s_preds = [pred[int(len(first)/2):] for pred in second]
                 s_loss, s_loss_items = compute_loss[1](s_preds, targets[1].to(device))  # loss scaled by batch_size
-                loss = f_loss + s_loss
+                loss = f_loss * 0.25 + s_loss * 0.75
                 loss_items = f_loss_items + s_loss_items
                 if RANK != -1:
                     loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
