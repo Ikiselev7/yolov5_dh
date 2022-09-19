@@ -335,7 +335,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                 second = preds[1]
                 s_preds = [pred[int(len(first)/2):] for pred in second]
                 s_loss, s_loss_items = compute_loss[1](s_preds, targets[1].to(device))  # loss scaled by batch_size
-                loss = f_loss * 0.25 + s_loss * 0.75
+                loss = f_loss + s_loss
                 loss_items = f_loss_items + s_loss_items
                 if RANK != -1:
                     loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
