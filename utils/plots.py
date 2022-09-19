@@ -191,7 +191,7 @@ def output_to_target(output):
 @threaded
 def plot_images(images, targets, paths=None, fname='images.jpg', names=None, max_size=1920, max_subplots=16):
     if isinstance(targets, list):
-        targets[1][:, 0] += 8
+        targets[1][:, 0] += len(targets[0])
         targets = torch.cat(targets)
     # Plot image grid with labels
     if isinstance(images, torch.Tensor):
