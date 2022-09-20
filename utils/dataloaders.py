@@ -176,8 +176,9 @@ class MultipleInfiniteDataloaderWrapper():
                 targets.append(target)
                 paths.extend(paths)
                 s.append(ss)
+            chunks = [len(img_b) for img_b in imgs]
             imgs = torch.cat(imgs)
-            yield imgs, targets, paths, s
+            yield imgs, targets, paths, chunks, s
 
 
 class InfiniteDataLoader(dataloader.DataLoader):

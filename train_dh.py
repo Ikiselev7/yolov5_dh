@@ -16,6 +16,7 @@ Tutorial:   https://github.com/ultralytics/yolov5/wiki/Train-Custom-Data
 """
 
 import argparse
+import glob
 import math
 import os
 import random
@@ -198,12 +199,19 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
         LOGGER.info('Using SyncBatchNorm()')
 
     # Trainloader
+    tr_lens = [len(glob.glob(str(Path(p) / '**' / '*.*'), recursive=True)) for p in train_paths]
+    props = [l / sum(tr_lens) for l in tr_lens]
+    bss = [int(round(p * batch_size)) for p in props]
+    workerss = [int(round(p * workers)) for p in props]
+    print(f"Batches {bss}")
+    print(f"Workers {workerss}")
+
     train_loaders = []
     datasets = []
-    for train_path in train_paths:
+    for train_path, bs, wrk in zip(train_paths, bss, workerss):
         train_loader, dataset = create_dataloader(train_path,
                                                   imgsz,
-                                                  int(batch_size / 2) // WORLD_SIZE,
+                                                  bs // WORLD_SIZE,
                                                   gs,
                                                   single_cls,
                                                   hyp=hyp,
@@ -211,7 +219,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                                                   cache=None if opt.cache == 'val' else opt.cache,
                                                   rect=opt.rect,
                                                   rank=LOCAL_RANK,
-                                                  workers=int(workers / len(train_paths)),
+                                                  workers=wrk,
                                                   image_weights=opt.image_weights,
                                                   quad=opt.quad,
                                                   prefix=colorstr('train: '),
@@ -300,7 +308,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
         if RANK in {-1, 0}:
             pbar = tqdm(pbar, total=nb, bar_format='{l_bar}{bar:10}{r_bar}{bar:-10b}')  # progress bar
         optimizer.zero_grad()
-        for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
+        for i, (imgs, targets, paths, chunks, _) in pbar:  # batch -------------------------------------------------------------
             callbacks.run('on_train_batch_start')
             ni = i + nb * epoch  # number integrated batches (since train start)
             imgs = imgs.to(device, non_blocking=True).float() / 255  # uint8 to float32, 0-255 to 0.0-1.0
@@ -326,17 +334,15 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
 
             # Forward
             with torch.cuda.amp.autocast(amp):
-                preds = model(imgs)  # forward
+                preds = model(imgs, head_chunks=chunks)  # forward
 
-                # TODO: make multiple
-                first = preds[0]
-                f_preds = [pred[:int(len(first)/2)] for pred in first]
-                f_loss, f_loss_items = compute_loss[0](f_preds, targets[0].to(device))  # loss scaled by batch_size
-                second = preds[1]
-                s_preds = [pred[int(len(first)/2):] for pred in second]
-                s_loss, s_loss_items = compute_loss[1](s_preds, targets[1].to(device))  # loss scaled by batch_size
-                loss = f_loss + s_loss
-                loss_items = f_loss_items + s_loss_items
+                loss = torch.zeros(1)
+                loss_items = torch.zeros(3)
+                for pred, target, comp_loss in zip(preds, targets, compute_loss):
+                    loss_h, loss_items_h = comp_loss(pred, target)
+                    loss += loss_h
+                    loss_items += loss_items_h
+
                 if RANK != -1:
                     loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
                 if opt.quad:

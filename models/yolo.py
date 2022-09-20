@@ -283,12 +283,14 @@ class DetectionMultiHeadModel(BaseModel):
         self.info()
         LOGGER.info('')
 
-    def forward(self, x, head=None, augment=False, profile=False, visualize=False):
+    def forward(self, x, head=None, head_chunks=None, augment=False, profile=False, visualize=False):
         if augment:
             return self._forward_augment(x)  # augmented inference, None
-        return self._forward_once(x, head, profile, visualize)  # single-scale inference, train
+        return self._forward_once(x, head, head_chunks, profile, visualize)  # single-scale inference, train
 
-    def _forward_once(self, x, head=None, profile=False, visualize=False):
+    def _forward_once(self, x, head=None, head_chunks=None, profile=False, visualize=False):
+        if head_chunks is None:
+            head_chunks = x.shape[0]
         y, dt = [], []  # outputs
         for m in self.model:
             if m.f != -1:  # if not from previous layer
@@ -299,11 +301,13 @@ class DetectionMultiHeadModel(BaseModel):
             y.append(x if m.i in self.save else None)  # save output
             if visualize:
                 feature_visualization(x, m.type, m.i, save_dir=visualize)
-        if head is None:
+        if head is None and len(head_chunks) != 1:
             dets = []
-            for h in self.heads:
-                x = y[h.f] if isinstance(h.f, int) else [x if j == -1 else y[j] for j in h.f]
-                dets.append(h(x))
+            hd = self.heads[0]
+            x = y[hd.f] if isinstance(hd.f, int) else [x if j == -1 else y[j] for j in hd.f]
+            x = [list(val) for val in list(zip(*[feat.split(head_chunks) for feat in x]))]
+            for h, inp in zip(self.heads, x):
+                dets.append(h(inp))
             return dets
         m = self.heads[head]
         x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]

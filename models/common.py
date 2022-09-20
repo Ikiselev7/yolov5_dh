@@ -472,14 +472,17 @@ class DetectMultiBackend(nn.Module):
 
         self.__dict__.update(locals())  # assign all variables to self
 
-    def forward(self, im, augment=False, visualize=False):
+    def forward(self, im, augment=False, visualize=False, head=None):
         # YOLOv5 MultiBackend inference
         b, ch, h, w = im.shape  # batch, channel, height, width
         if self.fp16 and im.dtype != torch.float16:
             im = im.half()  # to FP16
 
         if self.pt:  # PyTorch
-            y = self.model(im, augment=augment, visualize=visualize) if augment or visualize else self.model(im)
+            if head:
+                y = self.model(im, augment=augment, visualize=visualize) if augment or visualize else self.model(im, head=head)
+            else:
+                y = self.model(im, augment=augment, visualize=visualize) if augment or visualize else self.model(im)
         elif self.jit:  # TorchScript
             y = self.model(im)
         elif self.dnn:  # ONNX OpenCV DNN
