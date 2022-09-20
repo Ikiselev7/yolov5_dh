@@ -339,7 +339,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                 loss = torch.zeros(1)
                 loss_items = torch.zeros(3)
                 for pred, target, comp_loss in zip(preds, targets, compute_loss):
-                    loss_h, loss_items_h = comp_loss(pred, target)
+                    loss_h, loss_items_h = comp_loss(pred, target.to(device))
                     loss += loss_h
                     loss_items += loss_items_h
 
