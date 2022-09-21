@@ -336,12 +336,16 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
             with torch.cuda.amp.autocast(amp):
                 preds = model(imgs, head_chunks=chunks)  # forward
 
-                loss = torch.zeros(1)
-                loss_items = torch.zeros(3)
+                loss = None
+                loss_items = None
                 for pred, target, comp_loss in zip(preds, targets, compute_loss):
                     loss_h, loss_items_h = comp_loss(pred, target.to(device))
-                    loss += loss_h
-                    loss_items += loss_items_h
+                    if loss is None:
+                        loss = loss_h
+                        loss_items = loss_items_h
+                    else:
+                        loss += loss_h
+                        loss_items += loss_items_h
 
                 if RANK != -1:
                     loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
