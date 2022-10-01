@@ -455,9 +455,10 @@ def plot_evolve(evolve_csv='path/to/evolve.csv'):  # from utils.plots import *; 
 def plot_results(file='path/to/results.csv', dir=''):
     # Plot training results.csv. Usage: from utils.plots import *; plot_results('path/to/results.csv')
     save_dir = Path(file).parent if file else Path(dir)
+    name = file.name
     fig, ax = plt.subplots(2, 5, figsize=(12, 6), tight_layout=True)
     ax = ax.ravel()
-    files = list(save_dir.glob('results*.csv'))
+    files = list(save_dir.glob(name))
     assert len(files), f'No results.csv files found in {save_dir.resolve()}, nothing to plot.'
     for f in files:
         try:
@@ -474,7 +475,7 @@ def plot_results(file='path/to/results.csv', dir=''):
         except Exception as e:
             LOGGER.info(f'Warning: Plotting error for {f}: {e}')
     ax[1].legend()
-    fig.savefig(save_dir / 'results.png', dpi=200)
+    fig.savefig(save_dir / f'{name.replace(".csv", "")}.png', dpi=200)
     plt.close()
 
 

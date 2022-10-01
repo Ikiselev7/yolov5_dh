@@ -326,6 +326,16 @@ class DetectionMultiHeadModel(BaseModel):
                 b[:, 5:] += math.log(0.6 / (m.nc - 0.999999)) if cf is None else torch.log(cf / cf.sum())  # cls
                 mi.bias = torch.nn.Parameter(b.view(-1), requires_grad=True)
 
+    def _apply(self, fn):
+        # Apply to(), cpu(), cuda(), half() to model tensors that are not parameters or registered buffers
+        self = super()._apply(fn)
+        for head in self.heads:
+            head.stride = fn(head.stride)
+            head.grid = list(map(fn, head.grid))
+            if isinstance(head.anchor_grid, list):
+                head.anchor_grid = list(map(fn, head.anchor_grid))
+        return self
+
 
 class ClassificationModel(BaseModel):
     # YOLOv5 classification model

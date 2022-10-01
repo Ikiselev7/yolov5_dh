@@ -223,11 +223,13 @@ class Loggers():
         if self.comet_logger:
             self.comet_logger.on_val_end(nt, tp, fp, p, r, f1, ap, ap50, ap_class, confusion_matrix)
 
-    def on_fit_epoch_end(self, vals, epoch, best_fitness, fi):
+    def on_fit_epoch_end(self, vals, epoch, best_fitness, fi, head=None):
         # Callback runs at the end of each fit (train+val) epoch
         x = dict(zip(self.keys, vals))
         if self.csv:
             file = self.save_dir / 'results.csv'
+            if head is not None:
+                file = self.save_dir / f'results_head_{head}.csv'
             n = len(x) + 1  # number of cols
             s = '' if file.exists() else (('%20s,' * n % tuple(['epoch'] + self.keys)).rstrip(',') + '\n')  # add header
             with open(file, 'a') as f:
@@ -272,7 +274,12 @@ class Loggers():
     def on_train_end(self, last, best, epoch, results):
         # Callback runs on training end, i.e. saving best model
         if self.plots:
-            plot_results(file=self.save_dir / 'results.csv')  # save results.png
+            res = self.save_dir / 'results.csv'
+            if res.exists():
+                plot_results(file=self.save_dir / 'results.csv')  # save results.png
+            else:
+                plot_results(file=self.save_dir / 'results_head_0.csv')  # save results.png
+                plot_results(file=self.save_dir / 'results_head_1.csv')  # save results.png
         files = ['results.png', 'confusion_matrix.png', *(f'{x}_curve.png' for x in ('F1', 'PR', 'P', 'R'))]
         files = [(self.save_dir / f) for f in files if (self.save_dir / f).exists()]  # filter
         self.logger.info(f"Results saved to {colorstr('bold', self.save_dir)}")

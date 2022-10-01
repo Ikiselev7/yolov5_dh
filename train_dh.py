@@ -338,14 +338,14 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
 
                 loss = None
                 loss_items = None
-                for pred, target, comp_loss in zip(preds, targets, compute_loss):
+                for pred, target, comp_loss, l_weight in zip(preds, targets, compute_loss, [0.75, 0.25]):
                     loss_h, loss_items_h = comp_loss(pred, target.to(device))
                     if loss is None:
-                        loss = loss_h
-                        loss_items = loss_items_h
+                        loss = loss_h * l_weight
+                        loss_items = loss_items_h * l_weight
                     else:
-                        loss += loss_h
-                        loss_items += loss_items_h
+                        loss += loss_h * l_weight
+                        loss_items += loss_items_h * l_weight
 
                 if RANK != -1:
                     loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
@@ -411,9 +411,9 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
             stop = stopper(epoch=epoch, fitness=fi)  # early stop check
             if fi > best_fitness:
                 best_fitness = fi
-            for res in results:
+            for i, res in enumerate(results):
                 log_vals = list(mloss) + list(res) + lr
-                callbacks.run('on_fit_epoch_end', log_vals, epoch, best_fitness, fi)
+                callbacks.run('on_fit_epoch_end', log_vals, epoch, best_fitness, fi, head=i)
 
             # Save model
             if (not nosave) or (final_epoch and not evolve):  # if save
