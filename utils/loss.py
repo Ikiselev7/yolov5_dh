@@ -88,6 +88,38 @@ class QFocalLoss(nn.Module):
             return loss
 
 
+def smooth_l1_loss(pred, target, beta=1.0):
+    """Smooth L1 loss.
+
+    Args:
+        pred (torch.Tensor): The prediction.
+        target (torch.Tensor): The learning target of the prediction.
+        beta (float, optional): The threshold in the piecewise function.
+            Defaults to 1.0.
+
+    Returns:
+        torch.Tensor: Calculated loss
+    """
+    assert beta > 0
+    if target.numel() == 0:
+        return pred.sum() * 0
+
+    assert pred.size() == target.size()
+    # pred = torch.cat([
+    #     pred[..., 0] - pred[..., 2] / 2,
+    #     pred[..., 1] - pred[..., 3] / 2,
+    #     pred[..., 0] + pred[..., 2] / 2,
+    #     pred[..., 1] + pred[..., 3] / 2])
+    # target = torch.cat([
+    #     target[..., 0] - target[..., 2] / 2,
+    #     target[..., 1] - target[..., 3] / 2,
+    #     target[..., 0] + target[..., 2] / 2,
+    #     target[..., 1] + target[..., 3] / 2])
+    diff = torch.abs(pred - target)
+    loss = torch.where(diff < beta, 0.5 * diff * diff / beta, diff - 0.5 * beta)
+    return loss
+
+
 class ComputeLoss:
     sort_obj_iou = False
 
@@ -123,6 +155,7 @@ class ComputeLoss:
         lcls = torch.zeros(1, device=self.device)  # class loss
         lbox = torch.zeros(1, device=self.device)  # box loss
         lobj = torch.zeros(1, device=self.device)  # object loss
+        sl1 = torch.zeros(1, device=self.device)   # smooth L1 loss
         tcls, tbox, indices, anchors = self.build_targets(p, targets)  # targets
 
         # Losses
@@ -141,6 +174,7 @@ class ComputeLoss:
                 pbox = torch.cat((pxy, pwh), 1)  # predicted box
                 iou = bbox_iou(pbox, tbox[i], CIoU=True).squeeze()  # iou(prediction, target)
                 lbox += (1.0 - iou).mean()  # iou loss
+                sl1 += smooth_l1_loss(pbox, tbox[i]).mean()
 
                 # Objectness
                 iou = iou.detach().clamp(0).type(tobj.dtype)
@@ -171,9 +205,10 @@ class ComputeLoss:
         lbox *= self.hyp['box']
         lobj *= self.hyp['obj']
         lcls *= self.hyp['cls']
+        sl1 *= 0.01
         bs = tobj.shape[0]  # batch size
 
-        return (lbox + lobj + lcls) * bs, torch.cat((lbox, lobj, lcls)).detach()
+        return (lbox + lobj + lcls + sl1) * bs, torch.cat((lbox, lobj, lcls, sl1)).detach()
 
     def build_targets(self, p, targets):
         # Build targets for compute_loss(), input targets(image,class,x,y,w,h)

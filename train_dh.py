@@ -300,11 +300,11 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
         # b = int(random.uniform(0.25 * imgsz, 0.75 * imgsz + gs) // gs * gs)
         # dataset.mosaic_border = [b - imgsz, -b]  # height, width borders
 
-        mloss = torch.zeros(3, device=device)  # mean losses
+        mloss = torch.zeros(8, device=device)  # mean losses
         if RANK != -1:
             _ = [train_loader.sampler.set_epoch(epoch) for train_loader in tr_loader.dataloaders]
         pbar = enumerate(tr_loader)
-        LOGGER.info(('\n' + '%11s' * 7) % ('Epoch', 'GPU_mem', 'box_loss', 'obj_loss', 'cls_loss', 'Instances', 'Size'))
+        LOGGER.info(('\n' + '%11s' * 12) % ('Epoch', 'GPU_mem', 'box_loss', 'obj_loss', 'cls_loss', 'smooth_l1', 'box_loss', 'obj_loss', 'cls_loss', 'smooth_l1','Instances', 'Size'))
         if RANK in {-1, 0}:
             pbar = tqdm(pbar, total=nb, bar_format='{l_bar}{bar:10}{r_bar}{bar:-10b}')  # progress bar
         optimizer.zero_grad()
@@ -337,15 +337,15 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                 preds = model(imgs, head_chunks=chunks)  # forward
 
                 loss = None
-                loss_items = None
-                for pred, target, comp_loss, l_weight in zip(preds, targets, compute_loss, [0.75, 0.25]):
+                loss_items = []
+                for pred, target, comp_loss, l_weight in zip(preds, targets, compute_loss, [1.5, 1.0]):
                     loss_h, loss_items_h = comp_loss(pred, target.to(device))
                     if loss is None:
                         loss = loss_h * l_weight
-                        loss_items = loss_items_h * l_weight
+                        loss_items.append(loss_items_h * l_weight)
                     else:
                         loss += loss_h * l_weight
-                        loss_items += loss_items_h * l_weight
+                        loss_items.append(loss_items_h * l_weight)
 
                 if RANK != -1:
                     loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
@@ -368,9 +368,9 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
 
             # Log
             if RANK in {-1, 0}:
-                mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
+                mloss = (mloss * i + torch.cat(loss_items)) / (i + 1)  # update mean losses
                 mem = f'{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G'  # (GB)
-                pbar.set_description(('%11s' * 2 + '%11.4g' * 5) %
+                pbar.set_description(('%11s' * 2 + '%11.4g' * 10) %
                                      (f'{epoch}/{epochs - 1}', mem, *mloss, torch.cat(targets).shape[0], imgs.shape[-1]))
                 callbacks.run('on_train_batch_end', model, ni, imgs, targets, paths, list(mloss))
                 if callbacks.stop_training:
