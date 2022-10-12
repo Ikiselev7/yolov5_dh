@@ -6,7 +6,7 @@ Loss functions
 import torch
 import torch.nn as nn
 
-from utils.metrics import bbox_iou, box_iou
+from utils.metrics import bbox_iou, box_iou, bbox_alpha_iou
 from utils.torch_utils import de_parallel
 
 
@@ -172,7 +172,7 @@ class ComputeLoss:
                 pxy = pxy.sigmoid() * 2 - 0.5
                 pwh = (pwh.sigmoid() * 2) ** 2 * anchors[i]
                 pbox = torch.cat((pxy, pwh), 1)  # predicted box
-                iou = bbox_iou(pbox, tbox[i], EIoU=True).squeeze()  # iou(prediction, target)
+                iou = bbox_alpha_iou(pbox, tbox[i], EIoU=True).squeeze()  # iou(prediction, target)
                 lbox += (1.0 - iou).mean()  # iou loss
 
                 # p_iou = box_iou(pbox, pbox)

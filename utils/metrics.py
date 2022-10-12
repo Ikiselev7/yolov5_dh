@@ -268,6 +268,60 @@ def bbox_iou(box1, box2, xywh=True, GIoU=False, DIoU=False, CIoU=False, EIoU=Fal
     return iou  # IoU
 
 
+def bbox_alpha_iou(box1, box2, xywh=True, GIoU=False, DIoU=False, CIoU=False, EIoU=False, alpha=3, eps=1e-9):
+    # Get the coordinates of bounding boxes
+    if xywh:  # transform from xywh to xyxy
+        (x1, y1, w1, h1), (x2, y2, w2, h2) = box1.chunk(4, 1), box2.chunk(4, 1)
+        w1_, h1_, w2_, h2_ = w1 / 2, h1 / 2, w2 / 2, h2 / 2
+        b1_x1, b1_x2, b1_y1, b1_y2 = x1 - w1_, x1 + w1_, y1 - h1_, y1 + h1_
+        b2_x1, b2_x2, b2_y1, b2_y2 = x2 - w2_, x2 + w2_, y2 - h2_, y2 + h2_
+    else:  # x1, y1, x2, y2 = box1
+        b1_x1, b1_y1, b1_x2, b1_y2 = box1.chunk(4, 1)
+        b2_x1, b2_y1, b2_x2, b2_y2 = box2.chunk(4, 1)
+        w1, h1 = b1_x2 - b1_x1, b1_y2 - b1_y1
+        w2, h2 = b2_x2 - b2_x1, b2_y2 - b2_y1
+
+    # Intersection area
+    inter = (torch.min(b1_x2, b2_x2) - torch.max(b1_x1, b2_x1)).clamp(0) * \
+            (torch.min(b1_y2, b2_y2) - torch.max(b1_y1, b2_y1)).clamp(0)
+
+    union = w1 * h1 + w2 * h2 - inter + eps
+
+    # change iou into pow(iou+eps)
+    # iou = inter / union
+    iou = torch.pow(inter/union + eps, alpha)
+    # beta = 2 * alpha
+    if GIoU or DIoU or CIoU:
+        cw = torch.max(b1_x2, b2_x2) - torch.min(b1_x1, b2_x1)  # convex (smallest enclosing box) width
+        ch = torch.max(b1_y2, b2_y2) - torch.min(b1_y1, b2_y1)  # convex height
+        if CIoU or DIoU:  # Distance or Complete IoU https://arxiv.org/abs/1911.08287v1
+            c2 = (cw ** 2 + ch ** 2) ** alpha + eps  # convex diagonal
+            rho_x = torch.abs(b2_x1 + b2_x2 - b1_x1 - b1_x2)
+            rho_y = torch.abs(b2_y1 + b2_y2 - b1_y1 - b1_y2)
+            rho2 = ((rho_x ** 2 + rho_y ** 2) / 4) ** alpha  # center distance
+            if DIoU:
+                return iou - rho2 / c2  # DIoU
+            elif CIoU:  # https://github.com/Zzh-tju/DIoU-SSD-pytorch/blob/master/utils/box/box_utils.py#L47
+                v = (4 / math.pi ** 2) * torch.pow(torch.atan(w2 / h2) - torch.atan(w1 / h1), 2)
+                with torch.no_grad():
+                    alpha_ciou = v / ((1 + eps) - inter / union + v)
+                # return iou - (rho2 / c2 + v * alpha_ciou)  # CIoU
+                return iou - (rho2 / c2 + torch.pow(v * alpha_ciou + eps, alpha))  # CIoU
+            elif EIoU:
+                ch2 = (ch ** 2) ** alpha + eps  # convex height squared
+                cw2 = (cw ** 2) ** alpha + eps  # convex width squared
+                rho2h = ((h2 - h1) ** 2 / 4) ** alpha  # h diff ** 2
+                rho2w = ((w2 - w1) ** 2 / 4) ** alpha  # w diff ** 2
+                return iou - (rho2 / c2 + rho2h / ch2 + rho2w / cw2)
+        else:  # GIoU https://arxiv.org/pdf/1902.09630.pdf
+            # c_area = cw * ch + eps  # convex area
+            # return iou - (c_area - union) / c_area  # GIoU
+            c_area = torch.max(cw * ch + eps, union) # convex area
+            return iou - torch.pow((c_area - union) / c_area + eps, alpha)  # GIoU
+    else:
+        return iou # torch.log(iou+eps) or iou
+
+
 def box_area(box):
     # box = xyxy(4,n)
     return (box[2] - box[0]) * (box[3] - box[1])
