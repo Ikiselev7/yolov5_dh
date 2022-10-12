@@ -304,7 +304,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
         if RANK != -1:
             _ = [train_loader.sampler.set_epoch(epoch) for train_loader in tr_loader.dataloaders]
         pbar = enumerate(tr_loader)
-        LOGGER.info(('\n' + '%11s' * 12) % ('Epoch', 'GPU_mem', 'box_loss', 'obj_loss', 'cls_loss', 'smooth_l1', 'box_loss', 'obj_loss', 'cls_loss', 'smooth_l1','Instances', 'Size'))
+        LOGGER.info(('\n' + '%11s' * 12) % ('Epoch', 'GPU_mem', 'box_loss', 'obj_loss', 'cls_loss', 'self_iou', 'box_loss', 'obj_loss', 'cls_loss', 'self_iou','Instances', 'Size'))
         if RANK in {-1, 0}:
             pbar = tqdm(pbar, total=nb, bar_format='{l_bar}{bar:10}{r_bar}{bar:-10b}')  # progress bar
         optimizer.zero_grad()

@@ -6,7 +6,7 @@ Loss functions
 import torch
 import torch.nn as nn
 
-from utils.metrics import bbox_iou
+from utils.metrics import bbox_iou, box_iou
 from utils.torch_utils import de_parallel
 
 
@@ -155,7 +155,7 @@ class ComputeLoss:
         lcls = torch.zeros(1, device=self.device)  # class loss
         lbox = torch.zeros(1, device=self.device)  # box loss
         lobj = torch.zeros(1, device=self.device)  # object loss
-        sl1 = torch.zeros(1, device=self.device)   # smooth L1 loss
+        l_self_iou = torch.zeros(1, device=self.device)
         tcls, tbox, indices, anchors = self.build_targets(p, targets)  # targets
 
         # Losses
@@ -174,7 +174,11 @@ class ComputeLoss:
                 pbox = torch.cat((pxy, pwh), 1)  # predicted box
                 iou = bbox_iou(pbox, tbox[i], CIoU=True).squeeze()  # iou(prediction, target)
                 lbox += (1.0 - iou).mean()  # iou loss
-                sl1 += smooth_l1_loss(pbox, tbox[i]).mean()
+
+                p_iou = box_iou(pbox, pbox)
+                t_iou = box_iou(tbox[i], tbox[i])
+                l_s_iou = t_iou - p_iou
+                l_self_iou += torch.abs(l_s_iou).mean()
 
                 # Objectness
                 iou = iou.detach().clamp(0).type(tobj.dtype)
@@ -205,10 +209,10 @@ class ComputeLoss:
         lbox *= self.hyp['box']
         lobj *= self.hyp['obj']
         lcls *= self.hyp['cls']
-        sl1 *= 0.01
+        l_self_iou *= 0.1
         bs = tobj.shape[0]  # batch size
 
-        return (lbox + lobj + lcls + sl1) * bs, torch.cat((lbox, lobj, lcls, sl1)).detach()
+        return (lbox + lobj + lcls + l_self_iou) * bs, torch.cat((lbox, lobj, lcls, l_self_iou)).detach()
 
     def build_targets(self, p, targets):
         # Build targets for compute_loss(), input targets(image,class,x,y,w,h)
