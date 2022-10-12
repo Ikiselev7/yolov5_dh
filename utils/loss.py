@@ -172,13 +172,13 @@ class ComputeLoss:
                 pxy = pxy.sigmoid() * 2 - 0.5
                 pwh = (pwh.sigmoid() * 2) ** 2 * anchors[i]
                 pbox = torch.cat((pxy, pwh), 1)  # predicted box
-                iou = bbox_iou(pbox, tbox[i], CIoU=True).squeeze()  # iou(prediction, target)
+                iou = bbox_iou(pbox, tbox[i], EIoU=True).squeeze()  # iou(prediction, target)
                 lbox += (1.0 - iou).mean()  # iou loss
 
-                p_iou = box_iou(pbox, pbox)
-                t_iou = box_iou(tbox[i], tbox[i])
-                l_s_iou = t_iou - p_iou
-                l_self_iou += torch.abs(l_s_iou).mean()
+                # p_iou = box_iou(pbox, pbox)
+                # t_iou = box_iou(tbox[i], tbox[i])
+                # l_s_iou = t_iou - p_iou
+                # l_self_iou += torch.abs(l_s_iou).mean()
 
                 # Objectness
                 iou = iou.detach().clamp(0).type(tobj.dtype)
@@ -209,10 +209,10 @@ class ComputeLoss:
         lbox *= self.hyp['box']
         lobj *= self.hyp['obj']
         lcls *= self.hyp['cls']
-        l_self_iou *= 0.1
+        # l_self_iou *= 0.1
         bs = tobj.shape[0]  # batch size
 
-        return (lbox + lobj + lcls + l_self_iou) * bs, torch.cat((lbox, lobj, lcls, l_self_iou)).detach()
+        return (lbox + lobj + lcls) * bs, torch.cat((lbox, lobj, lcls, l_self_iou)).detach()
 
     def build_targets(self, p, targets):
         # Build targets for compute_loss(), input targets(image,class,x,y,w,h)
