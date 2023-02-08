@@ -479,8 +479,8 @@ class DetectMultiBackend(nn.Module):
             im = im.half()  # to FP16
 
         if self.pt:  # PyTorch
-            if head:
-                y = self.model(im, augment=augment, visualize=visualize) if augment or visualize else self.model(im, head=head)
+            if head is not None:
+                y = self.model(im, head=head, augment=augment, visualize=visualize) if augment or visualize else self.model(im, head=head)
             else:
                 y = self.model(im, augment=augment, visualize=visualize) if augment or visualize else self.model(im)
         elif self.jit:  # TorchScript

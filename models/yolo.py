@@ -285,12 +285,12 @@ class DetectionMultiHeadModel(BaseModel):
 
     def forward(self, x, head=None, head_chunks=None, augment=False, profile=False, visualize=False):
         if augment:
-            return self._forward_augment(x)  # augmented inference, None
+            return self._forward_augment(x, head, head_chunks)  # augmented inference, None
         return self._forward_once(x, head, head_chunks, profile, visualize)  # single-scale inference, train
 
     def _forward_once(self, x, head=None, head_chunks=None, profile=False, visualize=False):
         if head_chunks is None:
-            head_chunks = x.shape[0]
+            head_chunks = [x.shape[0]]
         y, dt = [], []  # outputs
         for m in self.model:
             if m.f != -1:  # if not from previous layer
@@ -313,8 +313,47 @@ class DetectionMultiHeadModel(BaseModel):
         x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]
         return m(x)
 
-    def _forward_augment(self, x):
-        raise NotImplementedError()
+    def _forward_augment(self, x, head, head_chunks):
+        img_size = x.shape[-2:]  # height, width
+        s = [2, 1, 0.5]  # scales
+        f = [3, None, 3]  # flips (2-ud, 3-lr)
+        y = []  # outputs
+        for si, fi in zip(s, f):
+            xi = scale_img(x.flip(fi) if fi else x, si, gs=int(self.stride.max()))
+            yi = self._forward_once(xi, head, head_chunks)[0]  # forward
+            # cv2.imwrite(f'img_{si}.jpg', 255 * xi[0].cpu().numpy().transpose((1, 2, 0))[:, :, ::-1])  # save
+            yi = self._descale_pred(yi, fi, si, img_size)
+            y.append(yi)
+        y = self._clip_augmented(y, head=head)  # clip augmented tails
+        return torch.cat(y, 1), None  # augmented inference, train
+
+    def _descale_pred(self, p, flips, scale, img_size):
+        # de-scale predictions following augmented inference (inverse operation)
+        if self.inplace:
+            p[..., :4] /= scale  # de-scale
+            if flips == 2:
+                p[..., 1] = img_size[0] - p[..., 1]  # de-flip ud
+            elif flips == 3:
+                p[..., 0] = img_size[1] - p[..., 0]  # de-flip lr
+        else:
+            x, y, wh = p[..., 0:1] / scale, p[..., 1:2] / scale, p[..., 2:4] / scale  # de-scale
+            if flips == 2:
+                y = img_size[0] - y  # de-flip ud
+            elif flips == 3:
+                x = img_size[1] - x  # de-flip lr
+            p = torch.cat((x, y, wh, p[..., 4:]), -1)
+        return p
+
+    def _clip_augmented(self, y, head=None):
+        # Clip YOLOv5 augmented inference tails
+        nl = self.heads[head].nl  # number of detection layers (P3-P5)
+        g = sum(4 ** x for x in range(nl))  # grid points
+        e = 1  # exclude layer count
+        i = (y[0].shape[1] // g) * sum(4 ** x for x in range(e))  # indices
+        y[0] = y[0][:, :-i]  # large
+        i = (y[-1].shape[1] // g) * sum(4 ** (nl - 1 - x) for x in range(e))  # indices
+        y[-1] = y[-1][:, i:]  # small
+        return y
 
     def _initialize_biases(self, cf=None):  # initialize biases into Detect(), cf is class frequency
         # https://arxiv.org/abs/1708.02002 section 3.3
