@@ -2,7 +2,7 @@
 """
 Logging utils
 """
-
+import glob
 import os
 import warnings
 from pathlib import Path
@@ -68,11 +68,11 @@ class Loggers():
             'train/box_loss',
             'train/obj_loss',
             'train/cls_loss',  # train loss
-            'train/smooth_l1_loss',  # train loss
-            'train/box_loss_2',
-            'train/obj_loss_2',
-            'train/cls_loss_2',  # train loss
-            'train/smooth_l1_loss_2',  # train loss
+            # 'train/smooth_l1_loss',  # train loss
+            # 'train/box_loss_2',
+            # 'train/obj_loss_2',
+            # 'train/cls_loss_2',  # train loss
+            # 'train/smooth_l1_loss_2',  # train loss
             'metrics/precision',
             'metrics/recall',
             'metrics/mAP_0.5',
@@ -80,7 +80,7 @@ class Loggers():
             'val/box_loss',
             'val/obj_loss',
             'val/cls_loss',  # val loss
-            'val/smooth_l1_loss',  # val loss
+            # 'val/smooth_l1_loss',  # val loss
             'x/lr0',
             'x/lr1',
             'x/lr2']  # params
@@ -284,8 +284,9 @@ class Loggers():
             if res.exists():
                 plot_results(file=self.save_dir / 'results.csv')  # save results.png
             else:
-                plot_results(file=self.save_dir / 'results_head_0.csv')  # save results.png
-                plot_results(file=self.save_dir / 'results_head_1.csv')  # save results.png
+                for res in glob.glob(str(self.save_dir / 'results_head_*.csv')):
+                    plot_results(file=Path(res))  # save results.png
+
         files = ['results.png', 'confusion_matrix.png', *(f'{x}_curve.png' for x in ('F1', 'PR', 'P', 'R'))]
         files = [(self.save_dir / f) for f in files if (self.save_dir / f).exists()]  # filter
         self.logger.info(f"Results saved to {colorstr('bold', self.save_dir)}")

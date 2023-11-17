@@ -42,11 +42,11 @@ ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
 import val_dh as validate  # for end-of-epoch mAP
 from models.experimental import attempt_load
-from models.yolo import Model, DetectionMultiHeadModel
-from utils.autoanchor import check_anchors, check_anchors_head
+from models.yolo import Model, DetectionMultiHeadModel, DetectionMultiHeadModelCls
+from utils.autoanchor import check_anchors, check_anchors_head, check_anchors_mh
 from utils.autobatch import check_train_batch_size
 from utils.callbacks import Callbacks
-from utils.dataloaders import create_dataloader, MultipleInfiniteDataloaderWrapper
+from utils.dataloaders import create_dataloader, MultipleInfiniteDataloaderWrapper, create_concat_dataloader
 from utils.downloads import attempt_download, is_url
 from utils.general import (LOGGER, check_amp, check_dataset, check_file, check_git_status, check_img_size,
                            check_requirements, check_suffix, check_yaml, colorstr, get_latest_run, increment_path,
@@ -55,7 +55,7 @@ from utils.general import (LOGGER, check_amp, check_dataset, check_file, check_g
 from utils.loggers import Loggers
 from utils.loggers.comet.comet_utils import check_comet_resume
 from utils.loggers.wandb.wandb_utils import check_wandb_resume
-from utils.loss import ComputeLoss
+from utils.loss import ComputeLoss, ComputeLossMH
 from utils.metrics import fitness
 from utils.plots import plot_evolve
 from utils.torch_utils import (EarlyStopping, ModelEMA, de_parallel, select_device, smart_DDP, smart_optimizer,
@@ -126,24 +126,20 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
         with torch_distributed_zero_first(LOCAL_RANK):
             weights = attempt_download(weights)  # download if not found locally
         ckpt = torch.load(weights, map_location='cpu')  # load checkpoint to CPU to avoid CUDA memory leak
-        model = DetectionMultiHeadModel(
+        model = DetectionMultiHeadModelCls(
             cfg, # or ckpt['model'].yaml,
             ch=3,
             nc=nc,
-            anchors=hyp.get('anchors'),
-            heads=len(train_paths)).to(device)  # create
+            anchors=hyp.get('anchors'),).to(device)  # create
         exclude = ['anchor'] if (cfg or hyp.get('anchors')) and not resume else []  # exclude keys
         #TODO: make multiple heads
-        if not hasattr(ckpt['model'], 'heads'):
-            head = ckpt['model'].model[-1]
-            ckpt['model'].heads = nn.Sequential(head, deepcopy(head))
         csd = ckpt['model'].float().state_dict()  # checkpoint state_dict as FP32
 
         csd = intersect_dicts(csd, model.state_dict(), exclude=exclude)  # intersect
         model.load_state_dict(csd, strict=False)  # load
         LOGGER.info(f'Transferred {len(csd)}/{len(model.state_dict())} items from {weights}')  # report
     else:
-        model = DetectionMultiHeadModel(cfg, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
+        model = DetectionMultiHeadModelCls(cfg, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
     amp = check_amp(model)  # check AMP
 
     # Freeze
@@ -206,28 +202,23 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
     print(f"Batches {bss}")
     print(f"Workers {workerss}")
 
-    train_loaders = []
-    datasets = []
-    for train_path, bs, wrk in zip(train_paths, bss, workerss):
-        train_loader, dataset = create_dataloader(train_path,
-                                                  imgsz,
-                                                  bs // WORLD_SIZE,
-                                                  gs,
-                                                  single_cls,
-                                                  hyp=hyp,
-                                                  augment=True,
-                                                  cache=None if opt.cache == 'val' else opt.cache,
-                                                  rect=opt.rect,
-                                                  rank=LOCAL_RANK,
-                                                  workers=wrk,
-                                                  image_weights=opt.image_weights,
-                                                  quad=opt.quad,
-                                                  prefix=colorstr('train: '),
-                                                  shuffle=True)
-        train_loaders.append(train_loader)
-        datasets.append(dataset)
-    labels = [np.concatenate(dataset.labels, 0) for dataset in datasets]
-    mlc = [int(lbl[:, 0].max()) for lbl in labels]  # max label class
+    train_loader, dataset = create_concat_dataloader(train_paths,
+                                                      imgsz,
+                                                      (batch_size // len(train_paths)) // WORLD_SIZE,
+                                                      gs,
+                                                      single_cls,
+                                                      hyp=hyp,
+                                                      augment=True,
+                                                      cache=None if opt.cache == 'val' else opt.cache,
+                                                      rect=opt.rect,
+                                                      rank=LOCAL_RANK,
+                                                      workers=workers,
+                                                      image_weights=opt.image_weights,
+                                                      quad=opt.quad,
+                                                      prefix=colorstr('train: '),
+                                                      shuffle=True)
+    labels = np.concatenate(dataset.labels, 0)
+    mlc = [int(labels[:, 0].max()) for lbl in labels]  # max label class
     for mlbl, ncl in zip(mlc, nc):
         assert mlbl < ncl, f'Label class {mlbl} exceeds nc={ncl} in {data}. Possible class labels are 0-{mlbl - 1}'
 
@@ -248,8 +239,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
 
         if not resume:
             if not opt.noautoanchor:
-                for dataset, head in zip(datasets, model.heads):
-                    check_anchors_head(dataset, head, thr=hyp['anchor_t'], imgsz=imgsz)  # run AutoAnchor
+                check_anchors_mh(datasets, model, thr=hyp['anchor_t'], imgsz=imgsz)  # run AutoAnchor
             model.half().float()  # pre-reduce anchor precision
 
         callbacks.run('on_pretrain_routine_end', labels, names)
@@ -259,7 +249,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
         model = smart_DDP(model)
 
     # Model attributes
-    nl = model.heads[0].nl  # number of detection layers (to scale hyps)
+    nl = de_parallel(model).model[-1].nl  # number of detection layers (to scale hyps)
     hyp['box'] *= 3 / nl  # scale to layers
     hyp['cls'] *= nc[0] / 80 * 3 / nl  # scale to classes and layers
     hyp['obj'] *= (imgsz / 640) ** 2 * 3 / nl  # scale to image size and layers
@@ -280,7 +270,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
     scheduler.last_epoch = start_epoch - 1  # do not move
     scaler = torch.cuda.amp.GradScaler(enabled=amp)
     stopper, stop = EarlyStopping(patience=opt.patience), False
-    compute_loss = [ComputeLoss(model, m=head) for head in model.heads] # init loss class
+    compute_loss = ComputeLossMH(model)# init loss class
     callbacks.run('on_train_start')
     LOGGER.info(f'Image sizes {imgsz} train, {imgsz} val\n'
                 f'Using {workers * WORLD_SIZE} dataloader workers\n'
@@ -300,7 +290,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
         # b = int(random.uniform(0.25 * imgsz, 0.75 * imgsz + gs) // gs * gs)
         # dataset.mosaic_border = [b - imgsz, -b]  # height, width borders
 
-        mloss = torch.zeros(8, device=device)  # mean losses
+        mloss = torch.zeros(3, device=device)  # mean losses
         if RANK != -1:
             _ = [train_loader.sampler.set_epoch(epoch) for train_loader in tr_loader.dataloaders]
         pbar = enumerate(tr_loader)
@@ -335,17 +325,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
             # Forward
             with torch.cuda.amp.autocast(amp):
                 preds = model(imgs, head_chunks=chunks)  # forward
-
-                loss = None
-                loss_items = []
-                for pred, target, comp_loss, l_weight in zip(preds, targets, compute_loss, [1.5, 1.0]):
-                    loss_h, loss_items_h = comp_loss(pred, target.to(device))
-                    if loss is None:
-                        loss = loss_h * l_weight
-                        loss_items.append(loss_items_h * l_weight)
-                    else:
-                        loss += loss_h * l_weight
-                        loss_items.append(loss_items_h * l_weight)
+                loss, loss_items = compute_loss(*preds, [t.to(device) for t in targets], chunks)  # loss scaled by batch_size
 
                 if RANK != -1:
                     loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
@@ -368,9 +348,9 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
 
             # Log
             if RANK in {-1, 0}:
-                mloss = (mloss * i + torch.cat(loss_items)) / (i + 1)  # update mean losses
+                mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
                 mem = f'{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G'  # (GB)
-                pbar.set_description(('%11s' * 2 + '%11.4g' * 10) %
+                pbar.set_description(('%11s' * 2 + '%11.4g' * 5) %
                                      (f'{epoch}/{epochs - 1}', mem, *mloss, torch.cat(targets).shape[0], imgs.shape[-1]))
                 callbacks.run('on_train_batch_end', model, ni, imgs, targets, paths, list(mloss))
                 if callbacks.stop_training:
@@ -401,7 +381,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                                                     save_dir=save_val,
                                                     plots=False,
                                                     callbacks=callbacks,
-                                                    compute_loss=compute_loss[i],
+                                                    compute_loss=compute_loss,
                                                     head=i)
                     results.append(result)
                     maps.append(map)
@@ -472,7 +452,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                             verbose=True,
                             plots=plots,
                             callbacks=callbacks,
-                            compute_loss=compute_loss[i],
+                            compute_loss=compute_loss,
                             head=i) # val best model with plots
                         # if is_coco:
                         #     callbacks.run('on_fit_epoch_end', list(mloss) + list(results) + lr, epoch, best_fitness, fi)
@@ -487,7 +467,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
 def parse_opt(known=False):
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights', type=str, default=ROOT / 'yolov5n6.pt', help='initial weights path')
-    parser.add_argument('--cfg', type=str, default=ROOT / 'hub/yolov5n6_dh.yaml', help='model.yaml path')
+    parser.add_argument('--cfg', type=str, default=ROOT / 'hub/yolov5n6_mh.yaml', help='model.yaml path')
     parser.add_argument('--data', type=str, default=[ROOT / 'data/coco128.yaml', ROOT / 'data/coco128.yaml'], nargs='+', help='dataset.yaml paths')
     parser.add_argument('--hyp', type=str, default=ROOT / 'data/hyps/hyp.scratch-low.yaml', help='hyperparameters path')
     parser.add_argument('--epochs', type=int, default=1, help='total training epochs')

@@ -25,7 +25,7 @@ import torch.nn.functional as F
 import torchvision
 import yaml
 from PIL import ExifTags, Image, ImageOps
-from torch.utils.data import DataLoader, Dataset, dataloader, distributed
+from torch.utils.data import DataLoader, Dataset, dataloader, distributed, ConcatDataset, ChainDataset
 from tqdm import tqdm
 
 from utils.augmentations import (Albumentations, augment_hsv, classify_albumentations, classify_transforms, copy_paste,
@@ -152,6 +152,65 @@ def create_dataloader(path,
                   sampler=sampler,
                   pin_memory=PIN_MEMORY,
                   collate_fn=LoadImagesAndLabels.collate_fn4 if quad else LoadImagesAndLabels.collate_fn,
+                  worker_init_fn=seed_worker,
+                  generator=generator), dataset
+
+
+def create_concat_dataloader(paths,
+                      imgsz,
+                      batch_size,
+                      stride,
+                      single_cls=False,
+                      hyp=None,
+                      augment=False,
+                      cache=False,
+                      pad=0.0,
+                      rect=False,
+                      rank=-1,
+                      workers=8,
+                      image_weights=False,
+                      quad=False,
+                      prefix='',
+                      shuffle=False,
+                      is_train=False):
+    if rect and shuffle:
+        LOGGER.warning('WARNING: --rect is incompatible with DataLoader shuffle, setting shuffle=False')
+        shuffle = False
+    with torch_distributed_zero_first(rank):  # init dataset *.cache only once if DDP
+        datasets = []
+        for path in paths:
+            datasets.append(LoadImagesAndLabels(
+                path,
+                imgsz,
+                batch_size,
+                augment=augment,  # augmentation
+                hyp=hyp,  # hyperparameters
+                rect=rect,  # rectangular batches
+                cache_images=cache,
+                single_cls=single_cls,
+                stride=int(stride),
+                pad=pad,
+                image_weights=image_weights,
+                prefix=prefix))
+        dataset = YoloConcatDataset(datasets)
+
+    batch_size = min(batch_size, len(dataset))
+    nd = torch.cuda.device_count()  # number of CUDA devices
+    nw = workers #min([os.cpu_count() // max(nd, 1), batch_size if batch_size > 1 else 0, workers])  # number of workers
+    sampler = None if rank == -1 else distributed.DistributedSampler(dataset, shuffle=shuffle)
+    if is_train:
+        loader = InfiniteDataLoader
+    else:
+        loader = DataLoader if image_weights else InfiniteDataLoader  # only DataLoader allows for attribute updates
+    generator = torch.Generator()
+    generator.manual_seed(0)
+    return loader(dataset,
+                  batch_size=batch_size,
+                  shuffle=shuffle and sampler is None,
+                  num_workers=nw,
+                  sampler=sampler,
+                  pin_memory=PIN_MEMORY,
+                  collate_fn=YoloConcatDataset.collate_fn,
                   worker_init_fn=seed_worker,
                   generator=generator), dataset
 
@@ -878,6 +937,60 @@ class LoadImagesAndLabels(Dataset):
             lb[:, 0] = i  # add target image index for build_targets()
 
         return torch.stack(im4, 0), torch.cat(label4, 0), path4, shapes4
+
+
+class YoloConcatDataset(Dataset):
+    def __init__(self, datasets):
+        self.datasets = datasets
+
+    def __len__(self):
+        return sum(len(d) for d in self.datasets)
+
+    def __getitem__(self, index):
+        for d_idx, d in enumerate(self.datasets):
+            if index < len(d):
+                return *d[index], d_idx
+            index -= len(d)
+        raise IndexError('index out of range')
+
+    @staticmethod
+    def collate_fn(batch):
+        im, label, path, shapes, d_index = sorted(zip(*batch), key=lambda x: x[4])  # transposed
+        for i, lb in enumerate(label):
+            lb[:, 0] = i  # add target image index for build_targets()
+        head_chunks = []
+        heads = []
+        count = 1
+        pre_idx = d_index[0]
+        for d_i in d_index[1:]:
+            if d_i == pre_idx:
+                count += 1
+            else:
+                head_chunks.append(count)
+                heads.append(pre_idx)
+                count = 1
+                pre_idx = d_i
+
+        return torch.stack(im, 0), torch.cat(label, 0), path, shapes, head_chunks, d_index
+
+    def __repr__(self):
+        return f'{self.__class__.__name__}({self.datasets})'
+
+    @property
+    def labels(self):
+        return [dataset.labels for dataset in self.datasets]
+
+    @property
+    def labels_full(self):
+        return np.concatenate([dataset.labels for dataset in self.datasets])
+
+    @property
+    def shapes(self):
+        return [dataset.shapes for dataset in self.datasets]
+
+    @property
+    def shapes_full(self):
+        return np.concatenate([dataset.shapes for dataset in self.datasets])
 
 
 # Ancillary functions --------------------------------------------------------------------------------------------------
